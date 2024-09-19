@@ -4,14 +4,15 @@ from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 import os
-
-import matplotlib.pyplot as plt
-import numpy as np
+import dash
+from dash import dcc, html
+from dash.dependencies import Input, Output
+import plotly.graph_objs as go
 
 # URL of the page to scrape
 url = "https://stockanalysis.com/list/toronto-stock-exchange/"
 
-# target filepath
+# Target filepath
 file_path = 'tsx_all_stocks_2000_today.csv'
 
 download_required = True
@@ -26,13 +27,9 @@ if os.path.exists(file_path):
     print(f"File created on: {creation_date}")
     modification_time = os.path.getmtime(file_path)
     modification_date = datetime.fromtimestamp(modification_time).strftime('%Y-%m-%d')
-    print(f"File last modified on: {modification_date}")
-    if creation_date == end_date:
+    if creation_date == end_date or modification_date == end_date:
         download_required = False
         status = "information already downloaded and cleaned"
-    elif modification_date == end_date:
-        download_required = False
-        status = "information already modified today"
 else:
     print(f"The file '{file_path}' does not exist.")
 
@@ -57,11 +54,7 @@ if download_required:
     # Load tickers into a DataFrame
     df = pd.DataFrame(tickers, columns=['Ticker'])
 
-    # Display the first few rows
-    print(df.head())
-
     # Check for missing data and fill with interpolation
-    print(df.isnull().sum())
     df = df.ffill()
     df.to_csv('canadian_stocks.csv')
 
@@ -71,7 +64,6 @@ if download_required:
 
     # Define the date range
     start_date = '2000-01-01'
-
 
     # Initialize an empty DataFrame to hold the combined data
     combined_data = pd.DataFrame()
@@ -87,11 +79,8 @@ if download_required:
         data = yf.download(ticker, start=start_date, end=end_date)
         
         # Clean numeric columns
-        data['Open'] = clean_numeric_column(data['Open'])
-        data['High'] = clean_numeric_column(data['High'])
-        data['Low'] = clean_numeric_column(data['Low'])
-        data['Close'] = clean_numeric_column(data['Close'])
-        data['Volume'] = clean_numeric_column(data['Volume'])
+        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+            data[col] = clean_numeric_column(data[col])
         
         # Rename the columns to include the ticker as a prefix
         data.columns = [f"{ticker}_{col}" for col in data.columns]
@@ -111,29 +100,39 @@ print(status)
 
 finished_data = pd.read_csv(file_path, index_col='Date', parse_dates=True)
 
-def line_plot(tickers_to_plot):
-    
-    # Construct the column names with the prefix
-    columns_to_plot = [f"{ticker}_Close" for ticker in tickers_to_plot]
-    
-    # Check if the columns exist in the DataFrame
-    missing_columns = [col for col in columns_to_plot if col not in finished_data.columns]
-    if missing_columns:
-        print(f"Missing columns: {missing_columns}")
-        return
-    
-    # Filter the DataFrame to include only the columns to plot
-    data_to_plot = finished_data[columns_to_plot].dropna()
-    
-    # Plot the selected columns
-    data_to_plot.plot(figsize=(14, 7))
-    
-    # Adjust the legend to display just the tickers
-    plt.title('Stock Prices Over Time')
-    plt.xlabel('Date')
-    plt.ylabel('Close Price')
-    plt.legend(tickers_to_plot)
-    plt.show()
+# Get unique tickers for dropdown options
+unique_tickers = sorted(list(set([col.split('_')[0] for col in finished_data.columns if 'Close' in col])))
 
-# Call the function with the finished data
-line_plot(['RY.TO', 'TD.TO', 'CNQ.TO', 'SHOP.TO']) 
+# Initialize Dash app
+app = dash.Dash(__name__)
+
+# Layout of the app
+app.layout = html.Div([
+    html.H1("Interactive Stock Price Dashboard"),
+    dcc.Dropdown(
+        id='ticker-dropdown',
+        options=[{'label': ticker, 'value': ticker} for ticker in unique_tickers],
+        value=['RY.TO', 'TD.TO'],  # Default value
+        multi=True
+    ),
+    dcc.Graph(id='price-graph')
+])
+
+# Callback to update graph
+@app.callback(
+    Output('price-graph', 'figure'),
+    [Input('ticker-dropdown', 'value')]
+)
+def update_graph(selected_tickers):
+    fig = go.Figure()
+
+    for ticker in selected_tickers:
+        column_name = f"{ticker}_Close"
+        if column_name in finished_data.columns:
+            fig.add_trace(go.Scatter(x=finished_data.index, y=finished_data[column_name], mode='lines', name=ticker))
+
+    fig.update_layout(title='Stock Prices Over Time', xaxis_title='Date', yaxis_title='Close Price')
+    return fig
+
+if __name__ == '__main__':
+    app.run_server(debug=True)
